@@ -2,7 +2,10 @@ package runner
 
 import (
 	"context"
+	// Go told me to?
+	_ "embed"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -84,6 +87,8 @@ func (sc *StepContext) Executor() common.Executor {
 			sc.setupAction(actionDir, remoteAction.Path),
 			sc.runAction(actionDir, remoteAction.Path),
 		)
+	case model.StepTypeInvalid:
+		return common.NewErrorExecutor(fmt.Errorf("Invalid run/uses syntax for job:%s step:%+v", rc.Run, step))
 	}
 
 	return common.NewErrorExecutor(fmt.Errorf("Unable to determine how to run job:%s step:%+v", rc.Run, step))
@@ -159,6 +164,29 @@ func (sc *StepContext) setupShellCommand() common.Executor {
 			return err
 		}
 		scriptName := fmt.Sprintf("workflow/%s", step.ID)
+
+		//Reference: https://github.com/actions/runner/blob/8109c962f09d9acc473d92c595ff43afceddb347/src/Runner.Worker/Handlers/ScriptHandlerHelpers.cs#L47-L64
+		//Reference: https://github.com/actions/runner/blob/8109c962f09d9acc473d92c595ff43afceddb347/src/Runner.Worker/Handlers/ScriptHandlerHelpers.cs#L19-L27
+		runPrepend := ""
+		runAppend := ""
+		scriptExt := ""
+		switch step.Shell {
+		case "bash", "sh":
+			scriptExt = ".sh"
+		case "pwsh", "powershell":
+			scriptExt = ".ps1"
+			runPrepend = "$ErrorActionPreference = 'stop'"
+			runAppend = "if ((Test-Path -LiteralPath variable:/LASTEXITCODE)) { exit $LASTEXITCODE }"
+		case "cmd":
+			scriptExt = ".cmd"
+			runPrepend = "@echo off"
+		case "python":
+			scriptExt = ".py"
+		}
+
+		scriptName += scriptExt
+		run = runPrepend + "\n" + run + "\n" + runAppend
+
 		log.Debugf("Wrote command '%s' to '%s'", run, scriptName)
 		containerPath := fmt.Sprintf("%s/%s", filepath.Dir(rc.Config.Workdir), scriptName)
 
@@ -168,7 +196,14 @@ func (sc *StepContext) setupShellCommand() common.Executor {
 		if step.Shell == "" {
 			step.Shell = rc.Run.Workflow.Defaults.Run.Shell
 		}
-		sc.Cmd = strings.Fields(strings.Replace(step.ShellCommand(), "{0}", containerPath, 1))
+		scCmd := step.ShellCommand()
+		scResolvedCmd := strings.Replace(scCmd, "{0}", containerPath, 1)
+		if step.Shell == "pwsh" || step.Shell == "powershell" {
+			sc.Cmd = strings.SplitN(scResolvedCmd, " ", 3)
+		} else {
+			sc.Cmd = strings.Fields(scResolvedCmd)
+		}
+
 		return rc.JobContainer.Copy(fmt.Sprintf("%s/", filepath.Dir(rc.Config.Workdir)), &container.FileEntry{
 			Name: scriptName,
 			Mode: 0755,
@@ -266,12 +301,55 @@ func (sc *StepContext) runUsesContainer() common.Executor {
 	}
 }
 
+//go:embed res/trampoline.js
+var trampoline []byte
+
 func (sc *StepContext) setupAction(actionDir string, actionPath string) common.Executor {
 	return func(ctx context.Context) error {
 		f, err := os.Open(filepath.Join(actionDir, actionPath, "action.yml"))
 		if os.IsNotExist(err) {
 			f, err = os.Open(filepath.Join(actionDir, actionPath, "action.yaml"))
 			if err != nil {
+				if _, err2 := os.Stat(filepath.Join(actionDir, actionPath, "Dockerfile")); err2 == nil {
+					sc.Action = &model.Action{
+						Name: "(Synthetic)",
+						Runs: model.ActionRuns{
+							Using: "docker",
+							Image: "Dockerfile",
+						},
+					}
+					log.Debugf("Using synthetic action %v for Dockerfile", sc.Action)
+					return nil
+				}
+				if sc.Step.With != nil {
+					if val, ok := sc.Step.With["args"]; ok {
+						err2 := ioutil.WriteFile(filepath.Join(actionDir, actionPath, "trampoline.js"), trampoline, 0400)
+						if err2 != nil {
+							return err
+						}
+						sc.Action = &model.Action{
+							Name: "(Synthetic)",
+							Inputs: map[string]model.Input{
+								"cwd": {
+									Description: "(Actual working directory)",
+									Required:    false,
+									Default:     filepath.Join(actionDir, actionPath),
+								},
+								"command": {
+									Description: "(Actual program)",
+									Required:    false,
+									Default:     val,
+								},
+							},
+							Runs: model.ActionRuns{
+								Using: "node12",
+								Main:  "trampoline.js",
+							},
+						}
+						log.Debugf("Using synthetic action %v", sc.Action)
+						return nil
+					}
+				}
 				return err
 			}
 		} else if err != nil {
@@ -411,10 +489,72 @@ func (sc *StepContext) runAction(actionDir string, actionPath string) common.Exe
 			).Finally(
 				stepContainer.Remove().IfBool(!rc.Config.ReuseContainers),
 			)(ctx)
+		case model.ActionRunsUsingComposite:
+			for outputName, output := range action.Outputs {
+				re := regexp.MustCompile(`\${{ steps\.([a-zA-Z_][a-zA-Z0-9_-]+)\.outputs\.([a-zA-Z_][a-zA-Z0-9_-]+) }}`)
+				matches := re.FindStringSubmatch(output.Value)
+				if len(matches) > 2 {
+					if sc.RunContext.OutputMappings == nil {
+						sc.RunContext.OutputMappings = make(map[MappableOutput]MappableOutput)
+					}
+
+					k := MappableOutput{StepID: matches[1], OutputName: matches[2]}
+					v := MappableOutput{StepID: step.ID, OutputName: outputName}
+					sc.RunContext.OutputMappings[k] = v
+				}
+			}
+
+			var executors []common.Executor
+			stepID := 0
+			for _, compositeStep := range action.Runs.Steps {
+				stepClone := compositeStep
+                // Take a copy of the run context structure (rc is a pointer)
+                // Then take the address of the new structure
+                rcCloneStr := *rc
+                rcClone := &rcCloneStr
+				if stepClone.ID == "" {
+					stepClone.ID = fmt.Sprintf("composite-%d", stepID)
+					stepID++
+				}
+                rcClone.CurrentStep = stepClone.ID
+
+                if err := compositeStep.Validate(); err != nil {
+                    return err
+                }
+
+                // Setup the outputs for the composite steps
+                if _, ok := rcClone.StepResults[stepClone.ID]; ! ok {
+                    rcClone.StepResults[stepClone.ID]  = &stepResult{
+                        Success: true,
+                        Outputs: make(map[string]string),
+                    }
+                }
+
+				stepClone.Run = strings.ReplaceAll(stepClone.Run, "${{ github.action_path }}", filepath.Join(containerActionDir, actionName))
+
+				stepContext := StepContext{
+					RunContext: rcClone,
+					Step:       &stepClone,
+					Env:        mergeMaps(sc.Env, stepClone.Env),
+				}
+
+                // Interpolate the outer inputs into the composite step with items
+                exprEval := sc.NewExpressionEvaluator()
+                for k, v := range stepContext.Step.With {
+
+                    if strings.Contains(v, "inputs") {
+                        stepContext.Step.With[k] = exprEval.Interpolate(v)
+                    }
+                }
+
+				executors = append(executors, stepContext.Executor())
+			}
+			return common.NewPipelineExecutor(executors...)(ctx)
 		default:
 			return fmt.Errorf(fmt.Sprintf("The runs.using key must be one of: %v, got %s", []string{
 				model.ActionRunsUsingDocker,
 				model.ActionRunsUsingNode12,
+				model.ActionRunsUsingComposite,
 			}, action.Runs.Using))
 		}
 	}
