@@ -6,11 +6,11 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v1
+      - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
+      - uses: actions/setup-go@0caeaed6fd66a828038c2da3c0f662a42862658f # v1.1.3
         with:
           go-version: 1.16
-      - uses: golangci/golangci-lint-action@v2
+      - uses: golangci/golangci-lint-action@5c56cd6c9dc07901af25baab6f2b0d9f3b7c3018 # v2.5.2
         env:
           CGO_ENABLED: 0
         with:
@@ -20,19 +20,19 @@ jobs:
     name: Test on Linux
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
         with:
           fetch-depth: 2
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v1
-      - uses: actions/setup-go@v1
+        uses: docker/setup-qemu-action@27d0a4f181a40b142cce983c5393082c365d1480 # v1.2.0
+      - uses: actions/setup-go@0caeaed6fd66a828038c2da3c0f662a42862658f # v1.1.3
         with:
           go-version: 1.16
       - run: go test -cover -coverprofile=coverage.txt -covermode=atomic ./...
         env:
           CGO_ENABLED: 0
       - name: Upload Codecov report
-        uses: codecov/codecov-action@v1.3.1
+        uses: codecov/codecov-action@fcebab03f26c7530a22baa63f06b3e0515f0c7cd # v1.3.1
         with:
           files: coverage.txt
           fail_ci_if_error: true # optional (default = false)
@@ -42,8 +42,8 @@ jobs:
     runs-on: macos-latest
     continue-on-error: true # Don't let macos test fail whole workflow
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v1
+      - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
+      - uses: actions/setup-go@0caeaed6fd66a828038c2da3c0f662a42862658f # v1.1.3
         with:
           go-version: 1.16
       - name: Install MacOS Docker
@@ -60,27 +60,27 @@ jobs:
       - test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v1
+      - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
+      - uses: actions/setup-go@0caeaed6fd66a828038c2da3c0f662a42862658f # v1.1.3
         with:
           go-version: 1.16
       - name: GoReleaser
-        uses: goreleaser/goreleaser-action@v2
+        uses: goreleaser/goreleaser-action@b953231f81b8dfd023c58e0854a721e35037f28b # v2.9.1
         with:
           version: latest
           args: release --snapshot --rm-dist
       - name: Capture Linux Binary
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2 # v2.3.1
         with:
           name: act-linux
           path: dist/act_linux_amd64/act
       - name: Capture Windows Binary
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2 # v2.3.1
         with:
           name: act-windows
           path: dist/act_windows_amd64/act.exe
       - name: Capture MacOS Binary
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2 # v2.3.1
         with:
           name: act-macos
           path: dist/act_darwin_amd64/act
@@ -93,14 +93,14 @@ jobs:
       - test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v1
+      - uses: actions/setup-go@0caeaed6fd66a828038c2da3c0f662a42862658f # v1.1.3
         with:
           go-version: 1.16
       - name: GoReleaser
-        uses: goreleaser/goreleaser-action@v1
+        uses: goreleaser/goreleaser-action@6e37040623d14330555c7be1603a9182cf92d32a # v1.5.1
         with:
           version: latest
           args: release --rm-dist
